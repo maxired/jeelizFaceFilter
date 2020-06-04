@@ -24,6 +24,10 @@ let THREESCENE1 = null;
 let THREESCENE1RENDERTARGET = null;
 let THREESCENE2 = null;
 let THREESCENE2RENDERTARGET = null;
+
+let THREESCENE3 = null;
+let THREESCENE3RENDERTARGET = null;
+
 let CANVAS_CTX = null;
 // global initilialized by JEEFACEFILTER:
 let GL = null, GLVIDEOTEXTURE = null;
@@ -40,7 +44,7 @@ BACKGROUNDTEXTURE.flipY = false;
 
 var BODYMATERIAL = new THREE.MeshBasicMaterial( {
   map: BODYTEXTURE,
-  color: new THREE.Color( 0xff00ff ),
+  color: new THREE.Color( 0xffffff ),
   depthTest: false,
   depthWrite: true,
   transparent: true,
@@ -85,7 +89,7 @@ function get_mat2DshaderSource() {
       }";
 }
 
-function build_videoMaterial(blurredAlphaTexture) {
+function build_videoMaterial(blurredAlphaTexture, bgTexture) {
   const mat = new THREE.RawShaderMaterial({
     depthWrite: true,
     depthTest: false,
@@ -94,19 +98,19 @@ function build_videoMaterial(blurredAlphaTexture) {
     fragmentShader: "precision lowp float;\n\
       uniform sampler2D samplerVideo, backgroundVideo, samplerBlurredAlphaFace;\n\
       varying vec2 vUV;\n\
-      const vec4 FACECOLOR=vec4(0.0, 0.0, 255.0, 0.0)/255.0;\n\
+      const vec4 FACECOLOR=vec4(255.0, 255.0, 255.0, 0.0)/255.0;\n\
       void main(void){\n\
         vec3 videoColor=texture2D(samplerVideo, vUV).rgb;\n\
         vec4 videoColorA=vec4(videoColor, 1);\n\
-        vec3 backgroundColor=texture2D(backgroundVideo, vUV).rgb;\n\
+        vec4 backgroundColor=texture2D(backgroundVideo, vUV).rgba;\n\
         vec4 faceColor=texture2D(samplerBlurredAlphaFace, vUV);\n\
         // apply some tweaks to faceColor:\n\
-        vec4 mixedColor = mix(videoColorA, FACECOLOR.rgba, 1. - faceColor.a);\n\
+        vec4 mixedColor = mix(videoColorA, backgroundColor, 1. - faceColor.a);\n\
         gl_FragColor = mixedColor;\n\
         //gl_FragColor.a = 0.0;\n\
       }",
     uniforms: {
-      backgroundVideo: { value: BG_BODY_TEXTURE },
+      backgroundVideo: { value: bgTexture },
       samplerVideo: { value: THREEVIDEOTEXTURE },
       samplerBlurredAlphaFace: { value: blurredAlphaTexture }
     }
@@ -146,7 +150,15 @@ function build_blurMaterial(dxy, threeTexture) {
       varying vec2 vUV;\n\
       void main(void){\n\
         vec4 colCenter = texture2D(samplerImage, vUV);\n\
-        gl_FragColor = colCenter;\n\
+        float alphaBlured = (8./254.) *texture2D(samplerImage, vUV-3.*dxy).a\n\
+          +(28./254.)*texture2D(samplerImage, vUV-2.*dxy).a\n\
+          +(56./254.)*texture2D(samplerImage, vUV-dxy).a\n\
+          +(70./254.)*colCenter.a\n\
+          +(56./254.)*texture2D(samplerImage, vUV+dxy).a\n\
+          +(28./254.)*texture2D(samplerImage, vUV+2.*dxy).a\n\
+          +(8./254.) *texture2D(samplerImage, vUV+3.*dxy).a;\n\
+        if (colCenter.a==0.0){alphaBlured=colCenter.a;}//blur only the interior (if colCenter.a==0 do nothing);\n\
+        gl_FragColor = vec4(colCenter.rgb, pow(alphaBlured, 2.));\n\
       }",
     uniforms: {
       samplerImage:{ value: threeTexture },
@@ -180,6 +192,8 @@ function init_threeScene(spec) {
   THREESCENE0 = new THREE.Scene();
   THREESCENE1 = new THREE.Scene();
   THREESCENE2 = new THREE.Scene();
+  THREESCENE3 = new THREE.Scene();
+  
   
   // CREATE THE TARGET TEXTURES FOR RENDER TO TEXTURE
   const filters = {
@@ -191,6 +205,7 @@ function init_threeScene(spec) {
   THREESCENE0RENDERTARGET = new THREE.WebGLRenderTarget(spec.canvasElement.width, spec.canvasElement.height, filters);
   THREESCENE1RENDERTARGET = new THREE.WebGLRenderTarget(spec.canvasElement.width, spec.canvasElement.height, filters);
   THREESCENE2RENDERTARGET = new THREE.WebGLRenderTarget(spec.canvasElement.width, spec.canvasElement.height, filters);
+  THREESCENE3RENDERTARGET = new THREE.WebGLRenderTarget(spec.canvasElement.width, spec.canvasElement.height, filters);
   
   // init video texture with red
   THREEVIDEOTEXTURE = new THREE.DataTexture(new Uint8Array([255,0,0]), 1, 1, THREE.RGBFormat);
@@ -238,7 +253,7 @@ function init_threeScene(spec) {
   const videoScreenCorners = new Float32Array([-1,-1, -2.0,  1,-1,-2.0,   1,1,-2.0,   -1,1,-2.0]);
   _quad2DGeometry.addAttribute('position', new THREE.BufferAttribute( videoScreenCorners, 3));
   _quad2DGeometry.setIndex(new THREE.BufferAttribute(new Uint16Array([0,1,2, 0,2,3]), 1));
-  const _videoMaterial = build_videoMaterial(THREESCENE2RENDERTARGET.texture);
+  const _videoMaterial = build_videoMaterial(THREESCENE2RENDERTARGET.texture, THREESCENE3RENDERTARGET.texture);
   const videoMesh = new THREE.Mesh(_quad2DGeometry, _videoMaterial);
   videoMesh.frustumCulled = false;
   videoMesh.transparent = true;
@@ -264,7 +279,7 @@ function init_threeScene(spec) {
 var backgroundGeometry = new THREE.BoxBufferGeometry( 10, 10, 0.02 );
 var bg = new THREE.Mesh( backgroundGeometry, BACKGROUNDMATERIAL );
 bg.frustumCulled = false;
-THREESCENE.add( bg );
+THREESCENE3.add( bg );
 bg.position.z = -10;
 //cube.renderOrder = 3;    
 //videoMesh.renderOrder = 2;
@@ -273,7 +288,7 @@ bg.position.z = -10;
 var geometry2 = new THREE.BoxBufferGeometry( 4, 4, 0.01 );
 var cube = new THREE.Mesh( geometry2, BODYMATERIAL );
 cube.frustumCulled = false;
-THREESCENE.add( cube );
+THREESCENE3.add( cube );
 bg.renderOrder = 1;
 cube.renderOrder = 5;    
 videoMesh.renderOrder = 6;
@@ -391,6 +406,9 @@ function init_faceFilter(videoSettings){
      BG_BODY_TEXTURE.flipY = false;
      */
       //videoMesh.position.set(0.5, .5, 0);
+      THREERENDERER.setRenderTarget(THREESCENE3RENDERTARGET)
+      
+      THREERENDERER.render(THREESCENE3, THREECAMERA);
       THREERENDERER.setRenderTarget(null)
       
       THREERENDERER.render(THREESCENE, THREECAMERA);

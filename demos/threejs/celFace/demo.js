@@ -24,12 +24,47 @@ let THREESCENE1 = null;
 let THREESCENE1RENDERTARGET = null;
 let THREESCENE2 = null;
 let THREESCENE2RENDERTARGET = null;
-
+let CANVAS_CTX = null;
 // global initilialized by JEEFACEFILTER:
 let GL = null, GLVIDEOTEXTURE = null;
-
+let _3DMODEL = null
 // other globalz:
 let ISDETECTED = false;
+const BACKGROUNDTEXTURE = new THREE.TextureLoader().load( "textures/natural2.jpg" );
+BACKGROUNDTEXTURE.flipY = true;
+const BODYTEXTURE = new THREE.TextureLoader().load( "textures/body2.png" );
+//BACKGROUNDTEXTURE.encoding = THREE.sRGBEncoding;
+BACKGROUNDTEXTURE.flipY = false;
+//BACKGROUNDTEXTURE.wrapS = THREE.RepeatWrapping;
+//BACKGROUNDTEXTURE.wrapT = THREE.RepeatWrapping;
+
+var BODYMATERIAL = new THREE.MeshBasicMaterial( {
+  map: BODYTEXTURE,
+  color: new THREE.Color( 0xff00ff ),
+  depthTest: false,
+  depthWrite: true,
+  transparent: true,
+ // alphaMap: BODYTEXTURE,
+} );
+BODYMATERIAL.frustumCulled = false;
+let BODYMESH = null;
+
+const BACKGROUNDMATERIAL = new THREE.MeshBasicMaterial( {
+  map: BACKGROUNDTEXTURE,
+  color: new THREE.Color( 0xffffff ),
+  //transparent: true,
+  //depthTest: false,
+ // depthWrite: true,
+  blending: THREE.NormalBlending,
+});
+ // alphaMap
+
+const width = 2048
+const height = 1024
+var data = new Uint8Array( width * height * 4 );
+let BG_BODY_TEXTURE; // = new THREE.TextureLoader().load( "textures/natural2.jpg" );;
+
+
 
 // callback: launched if a face is detected or lost
 function detect_callback(isDetected) {
@@ -39,6 +74,7 @@ function detect_callback(isDetected) {
     console.log('INFO in detect_callback(): LOST');
   }
 }
+
 
 function get_mat2DshaderSource() {
   return "attribute vec2 position;\n\
@@ -51,23 +87,26 @@ function get_mat2DshaderSource() {
 
 function build_videoMaterial(blurredAlphaTexture) {
   const mat = new THREE.RawShaderMaterial({
-    depthWrite: false,
+    depthWrite: true,
     depthTest: false,
+    transparent: true,
     vertexShader: get_mat2DshaderSource(),
     fragmentShader: "precision lowp float;\n\
-      uniform sampler2D samplerVideo, samplerBlurredAlphaFace;\n\
+      uniform sampler2D samplerVideo, backgroundVideo, samplerBlurredAlphaFace;\n\
       varying vec2 vUV;\n\
-      const vec3 LUMA=vec3(0.299,0.587,0.114); //grayscale conversion - see https://en.wikipedia.org/wiki/Grayscale#Luma_coding_in_video_systems\n\
-      const vec3 FACECOLOR=1.2*vec3(242.0, 236.0, 230.0)/255.0;\n\
+      const vec4 FACECOLOR=vec4(0.0, 0.0, 255.0, 0.0)/255.0;\n\
       void main(void){\n\
         vec3 videoColor=texture2D(samplerVideo, vUV).rgb;\n\
+        vec4 videoColorA=vec4(videoColor, 1);\n\
+        vec3 backgroundColor=texture2D(backgroundVideo, vUV).rgb;\n\
         vec4 faceColor=texture2D(samplerBlurredAlphaFace, vUV);\n\
         // apply some tweaks to faceColor:\n\
-        vec3 faceColorTweaked = dot(LUMA, faceColor.rgb)*FACECOLOR;\n\
-        vec3 mixedColor = mix(videoColor, faceColorTweaked, faceColor.a);\n\
-        gl_FragColor = vec4(mixedColor, 1.);\n\
+        vec4 mixedColor = mix(videoColorA, FACECOLOR.rgba, 1. - faceColor.a);\n\
+        gl_FragColor = mixedColor;\n\
+        //gl_FragColor.a = 0.0;\n\
       }",
     uniforms: {
+      backgroundVideo: { value: BG_BODY_TEXTURE },
       samplerVideo: { value: THREEVIDEOTEXTURE },
       samplerBlurredAlphaFace: { value: blurredAlphaTexture }
     }
@@ -107,15 +146,7 @@ function build_blurMaterial(dxy, threeTexture) {
       varying vec2 vUV;\n\
       void main(void){\n\
         vec4 colCenter = texture2D(samplerImage, vUV);\n\
-        float alphaBlured = (8./254.) *texture2D(samplerImage, vUV-3.*dxy).a\n\
-          +(28./254.)*texture2D(samplerImage, vUV-2.*dxy).a\n\
-          +(56./254.)*texture2D(samplerImage, vUV-dxy).a\n\
-          +(70./254.)*colCenter.a\n\
-          +(56./254.)*texture2D(samplerImage, vUV+dxy).a\n\
-          +(28./254.)*texture2D(samplerImage, vUV+2.*dxy).a\n\
-          +(8./254.) *texture2D(samplerImage, vUV+3.*dxy).a;\n\
-        if (colCenter.a==0.0){alphaBlured=colCenter.a;}//blur only the interior (if colCenter.a==0 do nothing);\n\
-        gl_FragColor = vec4(colCenter.rgb, pow(alphaBlured, 2.));\n\
+        gl_FragColor = colCenter;\n\
       }",
     uniforms: {
       samplerImage:{ value: threeTexture },
@@ -137,6 +168,13 @@ function init_threeScene(spec) {
     canvas: spec.canvasElement
   });
   
+  BG_BODY_TEXTURE = new THREE.DataTexture( data, width, height, THREE.RGBAFormat );
+  BG_BODY_TEXTURE.encoding = THREE.sRGBEncoding;
+  BG_BODY_TEXTURE.flipY = false;
+  BG_BODY_TEXTURE.wrapS = THREE.RepeatWrapping;
+  BG_BODY_TEXTURE.wrapT = THREE.RepeatWrapping;
+  
+  //THREERENDERER.setSize( window.innerWidth, window.innerHeight );
   // CREATE THE SCENES
   THREESCENE = new THREE.Scene();
   THREESCENE0 = new THREE.Scene();
@@ -197,12 +235,16 @@ function init_threeScene(spec) {
   
   // CREATE THE VIDEO BACKGROUND
   const _quad2DGeometry = new THREE.BufferGeometry()
-  const videoScreenCorners = new Float32Array([-1,-1,   1,-1,   1,1,   -1,1]);
-  _quad2DGeometry.addAttribute('position', new THREE.BufferAttribute( videoScreenCorners, 2));
+  const videoScreenCorners = new Float32Array([-1,-1, -2.0,  1,-1,-2.0,   1,1,-2.0,   -1,1,-2.0]);
+  _quad2DGeometry.addAttribute('position', new THREE.BufferAttribute( videoScreenCorners, 3));
   _quad2DGeometry.setIndex(new THREE.BufferAttribute(new Uint16Array([0,1,2, 0,2,3]), 1));
   const _videoMaterial = build_videoMaterial(THREESCENE2RENDERTARGET.texture);
   const videoMesh = new THREE.Mesh(_quad2DGeometry, _videoMaterial);
   videoMesh.frustumCulled = false;
+  videoMesh.transparent = true;
+  //videoMesh.depthWrite = true;
+  //videoMesh.depthWrite = true;
+  
   videoMesh.onAfterRender = function () {
     THREERENDERER.properties.update(THREEVIDEOTEXTURE, '__webglTexture', GLVIDEOTEXTURE);
     THREEVIDEOTEXTURE.magFilter = THREE.LinearFilter;
@@ -210,6 +252,36 @@ function init_threeScene(spec) {
     delete(videoMesh.onAfterRender);
   }
   THREESCENE.add(videoMesh);
+  
+  // THREESCENE.add(videoMesh);
+  
+
+  // CREATE THE VIDEO BACKGROUND
+  //THREESCENE.add(videoMesh);
+  
+  //THREESCENE.add(BODYMESH);
+
+var backgroundGeometry = new THREE.BoxBufferGeometry( 10, 10, 0.02 );
+var bg = new THREE.Mesh( backgroundGeometry, BACKGROUNDMATERIAL );
+bg.frustumCulled = false;
+THREESCENE.add( bg );
+bg.position.z = -10;
+//cube.renderOrder = 3;    
+//videoMesh.renderOrder = 2;
+
+
+var geometry2 = new THREE.BoxBufferGeometry( 4, 4, 0.01 );
+var cube = new THREE.Mesh( geometry2, BODYMATERIAL );
+cube.frustumCulled = false;
+THREESCENE.add( cube );
+bg.renderOrder = 1;
+cube.renderOrder = 5;    
+videoMesh.renderOrder = 6;
+BODYMESH=cube;
+BODYMESH.magFilter = THREE.LinearFilter;
+BODYMESH.minFilter = THREE.LinearFilter;
+
+//cube.position.set(0,0,-5);
 
   // INIT STUFFS FOR THE SECOND PASS:
   const faceBlurAlphaXmesh = new THREE.Mesh(_quad2DGeometry, build_blurMaterial([1 / spec.canvasElement.width, 0], THREESCENE0RENDERTARGET.texture));
@@ -219,9 +291,12 @@ function init_threeScene(spec) {
   THREESCENE1.add(faceBlurAlphaXmesh);
   THREESCENE2.add(faceBlurAlphaYmesh);
 
+
   // CREATE THE CAMERA:
   const aspecRatio = spec.canvasElement.width / spec.canvasElement.height;
   THREECAMERA = new THREE.PerspectiveCamera(SETTINGS.cameraFOV, aspecRatio, 0.1, 100);
+  THREECAMERA.position.z = 0;
+  CANVAS_CTX = spec.canvasElement.getContext('webgl');
 } // end init_threeScene()
 
 // entry point:
@@ -262,6 +337,7 @@ function init_faceFilter(videoSettings){
       }
 
       if (ISDETECTED) {
+        //CANVAS_CTX.clearColor(255,0,0,1);
         // move the cube in order to fit the head
         const tanFOV = Math.tan(THREECAMERA.aspect * THREECAMERA.fov * Math.PI / 360); // tan(FOV/2), in radians
         const W = detectState.s;  // relative width of the detection window (1-> whole width of the detection window)
@@ -279,20 +355,48 @@ function init_faceFilter(videoSettings){
         // move and rotate the cube
         THREEFACEOBJ3D.position.set(x, y + SETTINGS.pivotOffsetYZ[0], z + SETTINGS.pivotOffsetYZ[1]);
         THREEFACEOBJ3D.rotation.set(detectState.rx + SETTINGS.rotationOffsetX, detectState.ry, detectState.rz, "XYZ");
-      }
-
+      
+        //BODYMESH.position.set(x, -1.2 + SETTINGS.pivotOffsetYZ[0], z + SETTINGS.pivotOffsetYZ[1]);
+        BODYMESH.position.set(x + .1, y - 1.2 +  SETTINGS.pivotOffsetYZ[0] - 1.4,
+          z + SETTINGS.pivotOffsetYZ[1]
+          );
+       
+     
       THREERENDERER.state.reset();
       
+      THREERENDERER.setRenderTarget(THREESCENE0RENDERTARGET)
       // first render to texture: 3D face  mask with cel shading
-      THREERENDERER.render(THREESCENE0, THREECAMERA, THREESCENE0RENDERTARGET);
-
+      THREERENDERER.render(THREESCENE0, THREECAMERA);
+      THREERENDERER.setRenderTarget(THREESCENE1RENDERTARGET)
+      
       // second pass: add gaussian blur on alpha channel horizontally
-      THREERENDERER.render(THREESCENE1, THREECAMERA, THREESCENE1RENDERTARGET);
-
+      THREERENDERER.render(THREESCENE1, THREECAMERA);
+      THREERENDERER.setRenderTarget(THREESCENE2RENDERTARGET)
+      
       // second pass: add gaussian blur on alpha channel vertically
-      THREERENDERER.render(THREESCENE2, THREECAMERA, THREESCENE2RENDERTARGET);
+      THREERENDERER.render(THREESCENE2, THREECAMERA);
 
+      //debugger;
+      //THREERENDERER.copyTextureToTexture(new THREE.Vector2(0,0), BACKGROUNDTEXTURE, BG_BODY_TEXTURE);
+     // THREERENDERER.copyTextureToTexture(new THREE.Vector2(0,0), BODYTEXTURE, BG_BODY_TEXTURE, 0);
+     /*THREERENDERER.copyTextureToTexture(new THREE.Vector2(0,0), BACKGROUNDTEXTURE, BG_BODY_TEXTURE);
+     //THREERENDERER.copyTextureToTexture(new THREE.Vector2(0,0), BODYTEXTURE, BG_BODY_TEXTURE);
+     BODYTEXTURE.flipY = true;
+     THREERENDERER.copyTextureToTexture(
+       new THREE.Vector2(
+       // (0 + BODYTEXTURE.image.width / BG_BODY_TEXTURE.image.width / 2 ) * (BG_BODY_TEXTURE.image.width),
+    BODYTEXTURE.image.width / BG_BODY_TEXTURE.image.width,  
+    //  x * BG_BODY_TEXTURE.image.width + BODYTEXTURE.image.width/2,
+         y * BG_BODY_TEXTURE.image.height - SETTINGS.pivotOffsetYZ[0] *  BG_BODY_TEXTURE.image.height ), BODYTEXTURE, BG_BODY_TEXTURE);
+     BG_BODY_TEXTURE.flipY = false;
+     */
+      //videoMesh.position.set(0.5, .5, 0);
+      THREERENDERER.setRenderTarget(null)
+      
       THREERENDERER.render(THREESCENE, THREECAMERA);
+    }
+
+      // THREECAMERA.position.z = THREECAMERA.position.z - 0.01
     } // end callbackTrack()
   }); // end JEEFACEFILTERAPI.init call
 } // end main()
